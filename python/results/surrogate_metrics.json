@@ -1,0 +1,17 @@
+{
+  "n_train": 16000,
+  "n_test": 4000,
+  "ml_surrogate": {
+    "mae": 0.0469,
+    "r2": 0.9977
+  },
+  "matlab_linear_estimate": {
+    "mae": 0.6398,
+    "r2": 0.7171
+  },
+  "office_conditions_only": {
+    "n": 80,
+    "mae_linear": 0.2955,
+    "mae_ml": 0.0683
+  }
+}

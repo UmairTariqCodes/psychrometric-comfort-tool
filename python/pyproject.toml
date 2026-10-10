@@ -1,0 +1,11 @@
+[project]
+name = "psychro"
+version = "0.1.0"
+description = "Psychrometrics, ISO 7730 thermal comfort and ML comfort models"
+authors = [{ name = "Umair Ali Tariq" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pandas", "scikit-learn", "matplotlib", "joblib"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

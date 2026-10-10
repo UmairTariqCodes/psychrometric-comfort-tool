@@ -7,13 +7,25 @@ function psychrometric_interactive()
     %   - Mark and compare multiple points
     %   - Analyse HVAC processes between two points
     %   - Switch between SI and Imperial units
+    %   - Show an ASHRAE 55 comfort zone that responds to clo / met / air speed
+    %   - Calculate sensible / latent heat loads
+    %   - Stream live readings from a BME280 sensor via Arduino
     %   - Export data and save figures
     %
-    % Usage:
+    % Usage (run from this folder so the +psychro and +bme280 packages are on the path):
     %   psychrometric_interactive()
     %
-    % Author: Umair Ali Tariq
-    % Date: February 2026
+    % Requirements:
+    %   MATLAB R2019b or later (uses serialportlist)
+    %   Live Sensor tab only: MATLAB Support Package for Arduino Hardware
+    %
+    % Structure:
+    %   psychrometric_interactive.m  - GUI and callbacks
+    %   +psychro/                    - pure psychrometric & comfort calculations (unit-tested)
+    %   +bme280/                     - BME280 sensor calibration / compensation
+    %
+    % Author: Umair Ali Tariq (BEng Mechanical Engineering dissertation, University of Sussex, 2026)
+    % License: MIT
 
     %% Initialize Application Data
     appData = struct();
@@ -1503,7 +1515,7 @@ function psychrometric_interactive()
               'BackgroundColor', [0.94 0.94 0.94]);
 
     lsPortInput = uicontrol('Parent', lsConnPanel, 'Style', 'edit', ...
-              'String', '/dev/cu.usbmodem11401', ...
+              'String', '', ...  % filled by the Detect button
               'Units', 'normalized', ...
               'Position', [0.12 0.65 0.45 0.28], ...
               'FontSize', 9, ...
@@ -2084,7 +2096,7 @@ function psychrometric_interactive()
 
     function updateCloDescription(cloVal)
         handles = guidata(fig);
-        desc = getClothingDescription(cloVal);
+        desc = psychro.getClothingDescription(cloVal);
         set(handles.cloDescription, 'String', desc);
     end
 
@@ -2102,7 +2114,7 @@ function psychrometric_interactive()
         appData = getappdata(fig, 'appData');
 
         % Get comfort zone boundaries
-        [T_lo, T_hi] = getComfortTempRange(appData.comfortClo, ...
+        [T_lo, T_hi] = psychro.getComfortTempRange(appData.comfortClo, ...
             appData.comfortMet, appData.comfortAirVel, appData.unitSystem);
 
         if appData.unitSystem == 2
@@ -2161,7 +2173,7 @@ function psychrometric_interactive()
             end
 
             % PMV estimate (simplified Fanger model)
-            pmv = estimatePMV(To, RH, appData.comfortClo, ...
+            pmv = psychro.estimatePMV(To, RH, appData.comfortClo, ...
                               appData.comfortMet, appData.comfortAirVel, appData.unitSystem);
             ppd = 100 - 95 * exp(-0.03353 * pmv^4 - 0.2179 * pmv^2);
             ppd = max(5, min(100, ppd));
@@ -2322,13 +2334,13 @@ function psychrometric_interactive()
             if ~isempty(liveData)
                 if isOutdoor
                     set(handles.hlOutdoorTemp, 'String', sprintf('%.1f', liveData.T));
-                    Pws_l = saturationPressure(liveData.T, appData.unitSystem);
+                    Pws_l = psychro.saturationPressure(liveData.T, appData.unitSystem);
                     Pw_l = liveData.W * appData.pressure / (0.62198 + liveData.W);
                     RH_l = (Pw_l / Pws_l) * 100;
                     set(handles.hlOutdoorRH, 'String', sprintf('%.1f', RH_l));
                 else
                     set(handles.hlIndoorTemp, 'String', sprintf('%.1f', liveData.T));
-                    Pws_l = saturationPressure(liveData.T, appData.unitSystem);
+                    Pws_l = psychro.saturationPressure(liveData.T, appData.unitSystem);
                     Pw_l = liveData.W * appData.pressure / (0.62198 + liveData.W);
                     RH_l = (Pw_l / Pws_l) * 100;
                     set(handles.hlIndoorRH, 'String', sprintf('%.1f', RH_l));
@@ -2392,13 +2404,13 @@ function psychrometric_interactive()
             end
 
             % Compute humidity ratios from design conditions
-            Pws_out = saturationPressure(T_out, unitSys);
+            Pws_out = psychro.saturationPressure(T_out, unitSys);
             Pw_out = (RH_out / 100) * Pws_out;
-            W_out = humidityRatio(Pw_out, P, unitSys);
+            W_out = psychro.humidityRatio(Pw_out, P, unitSys);
 
-            Pws_in = saturationPressure(T_in, unitSys);
+            Pws_in = psychro.saturationPressure(T_in, unitSys);
             Pw_in = (RH_in / 100) * Pws_in;
-            W_in = humidityRatio(Pw_in, P, unitSys);
+            W_in = psychro.humidityRatio(Pw_in, P, unitSys);
 
             dT = T_out - T_in;
             dW = W_out - W_in;
@@ -2726,15 +2738,15 @@ function psychrometric_interactive()
             return;
         end
 
-        Pws = saturationPressure(T, appData.unitSystem);
-        W_sat = humidityRatio(Pws, appData.pressure, appData.unitSystem);
+        Pws = psychro.saturationPressure(T, appData.unitSystem);
+        W_sat = psychro.humidityRatio(Pws, appData.pressure, appData.unitSystem);
 
         if W > W_sat
             updateStatus('Invalid point: Above saturation curve. Please select a point below the blue line.');
             return;
         end
 
-        props = calculateProperties(T, W, appData.pressure, appData.unitSystem);
+        props = psychro.calculateProperties(T, W, appData.pressure, appData.unitSystem);
         displayProperties(props, appData.unitSystem);
         updateCurrentMarker(T, W);
 
@@ -2788,8 +2800,8 @@ function psychrometric_interactive()
                         updateStatus('RH must be between 0 and 100%.');
                         return;
                     end
-                    Pws = saturationPressure(T, unitSys);
-                    W = humidityRatio(RH * Pws, P, unitSys);
+                    Pws = psychro.saturationPressure(T, unitSys);
+                    W = psychro.humidityRatio(RH * Pws, P, unitSys);
 
                 case 12  % Dry-Bulb + Wet-Bulb
                     T = vals.Tdb;
@@ -2798,7 +2810,7 @@ function psychrometric_interactive()
                         updateStatus('Wet-bulb cannot exceed dry-bulb.');
                         return;
                     end
-                    W = humidityRatioFromWetBulb(T, Twb, P, unitSys);
+                    W = psychro.humidityRatioFromWetBulb(T, Twb, P, unitSys);
 
                 case 13  % Dry-Bulb + Dew Point
                     T = vals.Tdb;
@@ -2807,8 +2819,8 @@ function psychrometric_interactive()
                         updateStatus('Dew point cannot exceed dry-bulb.');
                         return;
                     end
-                    Pv = saturationPressure(Tdp, unitSys);
-                    W = humidityRatio(Pv, P, unitSys);
+                    Pv = psychro.saturationPressure(Tdp, unitSys);
+                    W = psychro.humidityRatio(Pv, P, unitSys);
 
                 case 14  % Dry-Bulb + Humidity Ratio
                     T = vals.Tdb;
@@ -2817,12 +2829,12 @@ function psychrometric_interactive()
                 case 15  % Dry-Bulb + Enthalpy
                     T = vals.Tdb;
                     h = vals.h;
-                    W = humidityRatioFromEnthalpy(h, T, unitSys);
+                    W = psychro.humidityRatioFromEnthalpy(h, T, unitSys);
 
                 case 26  % Wet-Bulb + RH
                     Twb = vals.Twb;
                     RH = vals.RH;
-                    [T, W] = solveFromWetBulbAndRH(Twb, RH, P, unitSys);
+                    [T, W] = psychro.solveFromWetBulbAndRH(Twb, RH, P, unitSys);
 
                 case 23  % Wet-Bulb + Dew Point
                     Twb = vals.Twb;
@@ -2831,31 +2843,31 @@ function psychrometric_interactive()
                         updateStatus('Dew point cannot exceed wet-bulb.');
                         return;
                     end
-                    [T, W] = solveFromWetBulbAndDewPoint(Twb, Tdp, P, unitSys);
+                    [T, W] = psychro.solveFromWetBulbAndDewPoint(Twb, Tdp, P, unitSys);
 
                 case 24  % Wet-Bulb + Humidity Ratio
                     Twb = vals.Twb;
                     W = vals.W;
-                    [T, ~] = solveFromWetBulbAndW(Twb, W, P, unitSys);
+                    [T, ~] = psychro.solveFromWetBulbAndW(Twb, W, P, unitSys);
 
                 case 25  % Wet-Bulb + Enthalpy
                     Twb = vals.Twb;
                     h = vals.h;
-                    [T, W] = solveFromWetBulbAndEnthalpy(Twb, h, P, unitSys);
+                    [T, W] = psychro.solveFromWetBulbAndEnthalpy(Twb, h, P, unitSys);
 
                 case 36  % Dew Point + RH
                     Tdp = vals.Tdp;
                     RH = vals.RH;
-                    Pv = saturationPressure(Tdp, unitSys);
+                    Pv = psychro.saturationPressure(Tdp, unitSys);
                     Pws_T = Pv / RH;
-                    T = temperatureFromSatPressure(Pws_T, unitSys);
-                    W = humidityRatio(Pv, P, unitSys);
+                    T = psychro.temperatureFromSatPressure(Pws_T, unitSys);
+                    W = psychro.humidityRatio(Pv, P, unitSys);
 
                 case 34  % Dew Point + Humidity Ratio
                     Tdp = vals.Tdp;
                     W = vals.W;
-                    Pv = saturationPressure(Tdp, unitSys);
-                    W_check = humidityRatio(Pv, P, unitSys);
+                    Pv = psychro.saturationPressure(Tdp, unitSys);
+                    W_check = psychro.humidityRatio(Pv, P, unitSys);
                     if abs(W - W_check) > 0.001
                         updateStatus('Warning: Dew point and W are inconsistent. Using Tdp.');
                         W = W_check;
@@ -2868,13 +2880,13 @@ function psychrometric_interactive()
                     % Default: user likely wants a specific T, but with only
                     % Tdp+W we need a third constraint. Use W to back-calculate.
                     Pv_from_W = W * P / (0.62198 + W);
-                    T = temperatureFromSatPressure(Pv_from_W / 0.5, unitSys);  % assume ~50% RH
+                    T = psychro.temperatureFromSatPressure(Pv_from_W / 0.5, unitSys);  % assume ~50% RH
 
                 case 35  % Dew Point + Enthalpy
                     Tdp = vals.Tdp;
                     h = vals.h;
-                    Pv = saturationPressure(Tdp, unitSys);
-                    W = humidityRatio(Pv, P, unitSys);
+                    Pv = psychro.saturationPressure(Tdp, unitSys);
+                    W = psychro.humidityRatio(Pv, P, unitSys);
                     if unitSys == 1
                         T = (h - W * 1061) / (0.24 + W * 0.444);
                     else
@@ -2886,7 +2898,7 @@ function psychrometric_interactive()
                     RH = vals.RH;
                     Pv = W * P / (0.62198 + W);
                     Pws_T = Pv / RH;
-                    T = temperatureFromSatPressure(Pws_T, unitSys);
+                    T = psychro.temperatureFromSatPressure(Pws_T, unitSys);
 
                 case 45  % Humidity Ratio + Enthalpy
                     W = vals.W;
@@ -2900,7 +2912,7 @@ function psychrometric_interactive()
                 case 56  % Enthalpy + RH
                     h = vals.h;
                     RH = vals.RH;
-                    [T, W] = solveFromEnthalpyAndRH(h, RH, P, unitSys);
+                    [T, W] = psychro.solveFromEnthalpyAndRH(h, RH, P, unitSys);
 
                 otherwise
                     updateStatus('This property combination is not yet supported.');
@@ -2912,14 +2924,14 @@ function psychrometric_interactive()
                 return;
             end
 
-            Pws = saturationPressure(T, unitSys);
-            W_sat = humidityRatio(Pws, P, unitSys);
+            Pws = psychro.saturationPressure(T, unitSys);
+            W_sat = psychro.humidityRatio(Pws, P, unitSys);
             if W > W_sat * 1.01
                 updateStatus('Result exceeds saturation. Check inputs.');
                 return;
             end
 
-            props = calculateProperties(T, W, P, unitSys);
+            props = psychro.calculateProperties(T, W, P, unitSys);
             displayProperties(props, unitSys);
             updateCurrentMarker(T, W);
 
@@ -3086,7 +3098,7 @@ function psychrometric_interactive()
             return;
         end
         appData = getappdata(fig, 'appData');
-        liveProps = calculateProperties(liveData.T, liveData.W, appData.pressure, appData.unitSystem);
+        liveProps = psychro.calculateProperties(liveData.T, liveData.W, appData.pressure, appData.unitSystem);
     end
 
     function isLive = isLiveSensorSelected(dropdownHandle)
@@ -3276,9 +3288,9 @@ function psychrometric_interactive()
             T_room_hl = str2double(get(handles.hlIndoorTemp, 'String'));
             RH_room_hl = str2double(get(handles.hlIndoorRH, 'String')) / 100;
             if ~isnan(T_room_hl) && ~isnan(RH_room_hl) && RH_room_hl > 0
-                Pws_room_hl = saturationPressure(T_room_hl, unitSys);
+                Pws_room_hl = psychro.saturationPressure(T_room_hl, unitSys);
                 Pv_room_hl = RH_room_hl * Pws_room_hl;
-                W_room_hl = humidityRatio(Pv_room_hl, P, unitSys);
+                W_room_hl = psychro.humidityRatio(Pv_room_hl, P, unitSys);
                 T_shr_origin = T_room_hl;
                 W_shr_origin = W_room_hl;
             else
@@ -3292,7 +3304,7 @@ function psychrometric_interactive()
         end
 
         % Find ADP: intersection of SHR line from ROOM condition with saturation curve
-        [T_adp, W_adp] = findADP(T_shr_origin, W_shr_origin, SHR_for_ADP, P, unitSys);
+        [T_adp, W_adp] = psychro.findADP(T_shr_origin, W_shr_origin, SHR_for_ADP, P, unitSys);
 
         if ~isnan(T_adp)
             if unitSys == 2
@@ -3550,7 +3562,7 @@ function psychrometric_interactive()
             else
                 % Legacy: use dew point of outlet air
                 Pv_B = pB.W * P / (0.62198 + pB.W);
-                T_coil_target = calculateDewPoint(Pv_B, unitSys);
+                T_coil_target = psychro.calculateDewPoint(Pv_B, unitSys);
                 W_coil_target = pB.W;
                 useADP = false;
                 T_offcoil = pB.T;
@@ -3559,7 +3571,7 @@ function psychrometric_interactive()
 
             % Phase 1: Find dew point of inlet air (where cooling starts condensing)
             Pv_inlet = pA.W * P / (0.62198 + pA.W);
-            T_dp_room = calculateDewPoint(Pv_inlet, unitSys);
+            T_dp_room = psychro.calculateDewPoint(Pv_inlet, unitSys);
             T_dp_room = min(T_dp_room, pA.T);
 
             % Phase 1: Sensible cooling — horizontal from Point A to its dew point
@@ -3571,8 +3583,8 @@ function psychrometric_interactive()
             curveT = linspace(T_dp_room, T_coil_target, nPts);
             curveW = zeros(size(curveT));
             for ci = 1:nPts
-                Pws_c = saturationPressure(curveT(ci), unitSys);
-                curveW(ci) = humidityRatio(Pws_c, P, unitSys);
+                Pws_c = psychro.saturationPressure(curveT(ci), unitSys);
+                curveW(ci) = psychro.humidityRatio(Pws_c, P, unitSys);
             end
             plot(handles.ax, curveT, curveW, ...
                  '-', 'Color', procColor, 'LineWidth', 2.0, 'Tag', 'processLine', 'HandleVisibility', 'off');
@@ -3964,13 +3976,23 @@ function psychrometric_interactive()
 
     function lsDetectPortCallback(~, ~)
         handles = guidata(fig);
-        [status, result] = system('ls /dev/cu.usb* 2>/dev/null');
-        if status == 0 && ~isempty(strtrim(result))
-            ports = strsplit(strtrim(result), '\n');
-            set(handles.lsPortInput, 'String', ports{1});
-            updateStatus('Port detected.');
+        % Cross-platform port detection (Windows COMx, macOS /dev/cu.*, Linux /dev/tty*)
+        ports = string.empty;
+        try
+            ports = serialportlist("available");
+        catch
+            % serialportlist needs R2019b+; fall back to nothing found
+        end
+        % Prefer USB ports (Arduino) on macOS / Linux
+        usb = ports(contains(ports, ["usbmodem", "usbserial", "ttyACM", "ttyUSB"]));
+        if ~isempty(usb)
+            ports = usb;
+        end
+        if ~isempty(ports)
+            set(handles.lsPortInput, 'String', char(ports(1)));
+            updateStatus(sprintf('Port detected: %s', ports(1)));
         else
-            updateStatus('No USB ports detected.');
+            updateStatus('No serial ports detected - plug in the Arduino and try again.');
         end
     end
 
@@ -3982,6 +4004,9 @@ function psychrometric_interactive()
             % Connect
             try
                 port = strtrim(get(handles.lsPortInput, 'String'));
+                if isempty(port)
+                    error('No serial port set - click Detect first.');
+                end
                 boardTypes = get(handles.lsBoardDropdown, 'String');
                 boardIdx = get(handles.lsBoardDropdown, 'Value');
                 board = boardTypes{boardIdx};
@@ -4009,7 +4034,7 @@ function psychrometric_interactive()
                 handles.lsSensor = sensor;
 
                 % Read calibration data
-                cal = lsReadCalibration(sensor);
+                cal = bme280.readCalibration(sensor);
                 setappdata(fig, 'lsCalibration', cal);
 
                 % Get interval from dropdown
@@ -4093,7 +4118,7 @@ function psychrometric_interactive()
             cal = getappdata(fig, 'lsCalibration');
 
             % Compensate BME280 readings
-            [T_C, RH_pct, P_kPa] = lsCompensateBME280(rawBytes, cal);
+            [T_C, RH_pct, P_kPa] = bme280.compensate(rawBytes, cal);
 
             % Get current unit system
             appData = getappdata(fig, 'appData');
@@ -4101,9 +4126,9 @@ function psychrometric_interactive()
             P_atm = appData.pressure;  % Pa
 
             % Compute W in SI for storage
-            Pws_si = saturationPressure(T_C, 2);
+            Pws_si = psychro.saturationPressure(T_C, 2);
             Pw_si = (RH_pct / 100) * Pws_si;
-            W_si = humidityRatio(Pw_si, P_atm, 2);
+            W_si = psychro.humidityRatio(Pw_si, P_atm, 2);
 
             % Store live data for Use as State A/B buttons
             if unitSys == 1
@@ -4125,19 +4150,19 @@ function psychrometric_interactive()
             end
 
             % Compute psychrometric properties using SI internally
-            Pws = saturationPressure(T_C, 2);  % Always compute in SI
+            Pws = psychro.saturationPressure(T_C, 2);  % Always compute in SI
             Pw = (RH_pct / 100) * Pws;
-            W = humidityRatio(Pw, P_atm, 2);
+            W = psychro.humidityRatio(Pw, P_atm, 2);
 
             % Dew point: find Tdp where saturationPressure(Tdp) = Pw
             if Pw > 0
-                Tdp = dewPointFromPw(Pw);
+                Tdp = psychro.dewPointFromPw(Pw);
             else
                 Tdp = -273.15;
             end
 
             % Wet-bulb: iterative approximation
-            Twb = wetBulbFromTW(T_C, W, P_atm);
+            Twb = psychro.wetBulbFromTW(T_C, W, P_atm);
 
             % Enthalpy (SI): h = 1.006*T + W*(2501 + 1.86*T) kJ/kg
             h_SI = 1.006 * T_C + W * (2501 + 1.86 * T_C);
@@ -4175,7 +4200,7 @@ function psychrometric_interactive()
             cloVal = appData.comfortClo;
             metVal = appData.comfortMet;
             airVel = appData.comfortAirVel;
-            [T_lo, T_hi] = getComfortTempRange(cloVal, metVal, airVel, 2);  % always SI
+            [T_lo, T_hi] = psychro.getComfortTempRange(cloVal, metVal, airVel, 2);  % always SI
             W_upper = 0.012;  % ASHRAE 55 upper humidity limit
             RH_lo = 0.30;
             inComfort = (T_C >= T_lo && T_C <= T_hi && W_si <= W_upper && RH_pct/100 >= RH_lo);
@@ -4322,125 +4347,7 @@ function psychrometric_interactive()
         updateStatus(sprintf('Update interval set to %d seconds.', newPeriod));
     end
 
-    function Tdp = dewPointFromPw(Pw)
-        % Approximate dew point from partial water vapour pressure (Pa)
-        % Using Magnus formula inverted
-        if Pw <= 0
-            Tdp = -273.15;
-            return;
-        end
-        alpha = log(Pw / 611.21);
-        Tdp = (257.14 * alpha) / (18.678 - alpha);
-    end
-
-    function Twb = wetBulbFromTW(Tdb, W, P_atm)
-        % Iterative wet-bulb calculation
-        % Uses bisection method
-        Twb_low = -20;
-        Twb_high = Tdb;
-        for iter = 1:50
-            Twb_mid = (Twb_low + Twb_high) / 2;
-            Pws_wb = saturationPressure(Twb_mid, 2);
-            Ws_wb = humidityRatio(Pws_wb, P_atm, 2);
-            % Psychrometric relation: W = Ws_wb - 0.00066*P_atm/1000*(Tdb - Twb_mid)
-            W_calc = Ws_wb - 0.000662 * (P_atm/1000) * (Tdb - Twb_mid) / 1000;
-            if W_calc > W
-                Twb_high = Twb_mid;
-            else
-                Twb_low = Twb_mid;
-            end
-            if abs(Twb_high - Twb_low) < 0.01
-                break;
-            end
-        end
-        Twb = (Twb_low + Twb_high) / 2;
-    end
-
     %% ==================== BME280 HELPER FUNCTIONS ====================
-
-    function cal = lsReadCalibration(sensor)
-        % Read temperature and pressure calibration: registers 0x88-0xA1 (26 bytes)
-        tpCal = zeros(1, 26, 'uint8');
-        for k = 0:25
-            tpCal(k+1) = readRegister(sensor, uint8(0x88 + k), 'uint8');
-        end
-
-        cal.dig_T1 = typecast(uint8(tpCal(1:2)), 'uint16');
-        cal.dig_T2 = typecast(uint8(tpCal(3:4)), 'int16');
-        cal.dig_T3 = typecast(uint8(tpCal(5:6)), 'int16');
-
-        cal.dig_P1 = typecast(uint8(tpCal(7:8)), 'uint16');
-        cal.dig_P2 = typecast(uint8(tpCal(9:10)), 'int16');
-        cal.dig_P3 = typecast(uint8(tpCal(11:12)), 'int16');
-        cal.dig_P4 = typecast(uint8(tpCal(13:14)), 'int16');
-        cal.dig_P5 = typecast(uint8(tpCal(15:16)), 'int16');
-        cal.dig_P6 = typecast(uint8(tpCal(17:18)), 'int16');
-        cal.dig_P7 = typecast(uint8(tpCal(19:20)), 'int16');
-        cal.dig_P8 = typecast(uint8(tpCal(21:22)), 'int16');
-        cal.dig_P9 = typecast(uint8(tpCal(23:24)), 'int16');
-
-        % Humidity calibration: H1 at 0xA1
-        cal.dig_H1 = readRegister(sensor, uint8(0xA1), 'uint8');
-
-        % H2-H6 at registers 0xE1-0xE7
-        hCal = zeros(1, 7, 'uint8');
-        for k = 0:6
-            hCal(k+1) = readRegister(sensor, uint8(0xE1 + k), 'uint8');
-        end
-
-        cal.dig_H2 = typecast(uint8(hCal(1:2)), 'int16');
-        cal.dig_H3 = hCal(3);
-        cal.dig_H4 = int16(bitor(bitshift(int16(hCal(4)), 4), bitand(int16(hCal(5)), int16(0x0F))));
-        cal.dig_H5 = int16(bitor(bitshift(int16(hCal(6)), 4), bitand(bitshift(int16(hCal(5)), -4), int16(0x0F))));
-        cal.dig_H6 = typecast(uint8(hCal(7)), 'int8');
-    end
-
-    function [T_C, RH_pct, P_kPa] = lsCompensateBME280(raw, cal)
-        % Parse raw 8-byte data from registers 0xF7-0xFE
-        % Bytes: press_msb, press_lsb, press_xlsb, temp_msb, temp_lsb, temp_xlsb, hum_msb, hum_lsb
-        adc_P = bitshift(int32(raw(1)), 12) + bitshift(int32(raw(2)), 4) + ...
-                bitshift(int32(raw(3)), -4);
-        adc_T = bitshift(int32(raw(4)), 12) + bitshift(int32(raw(5)), 4) + ...
-                bitshift(int32(raw(6)), -4);
-        adc_H = bitshift(int32(raw(7)), 8) + int32(raw(8));
-
-        % Temperature compensation
-        var1 = (double(adc_T)/16384.0 - double(cal.dig_T1)/1024.0) * double(cal.dig_T2);
-        var2 = ((double(adc_T)/131072.0 - double(cal.dig_T1)/8192.0) * ...
-                (double(adc_T)/131072.0 - double(cal.dig_T1)/8192.0)) * double(cal.dig_T3);
-        t_fine = var1 + var2;
-        T_C = t_fine / 5120.0;
-
-        % Pressure compensation
-        var1 = t_fine/2.0 - 64000.0;
-        var2 = var1 * var1 * double(cal.dig_P6) / 32768.0;
-        var2 = var2 + var1 * double(cal.dig_P5) * 2.0;
-        var2 = var2/4.0 + double(cal.dig_P4) * 65536.0;
-        var1 = (double(cal.dig_P3) * var1 * var1 / 524288.0 + double(cal.dig_P2) * var1) / 524288.0;
-        var1 = (1.0 + var1/32768.0) * double(cal.dig_P1);
-        if var1 == 0
-            P_kPa = 0;
-        else
-            p = 1048576.0 - double(adc_P);
-            p = (p - var2/4096.0) * 6250.0 / var1;
-            var1 = double(cal.dig_P9) * p * p / 2147483648.0;
-            var2 = p * double(cal.dig_P8) / 32768.0;
-            p = p + (var1 + var2 + double(cal.dig_P7)) / 16.0;
-            P_kPa = p / 1000.0;  % Convert Pa to kPa
-        end
-
-        % Humidity compensation
-        h = t_fine - 76800.0;
-        if h == 0
-            RH_pct = 0;
-        else
-            h = (double(adc_H) - (double(cal.dig_H4) * 64.0 + double(cal.dig_H5) / 16384.0 * h)) * ...
-                (double(cal.dig_H2) / 65536.0 * (1.0 + double(cal.dig_H6) / 67108864.0 * h * ...
-                (1.0 + double(cal.dig_H3) / 67108864.0 * h)));
-            h = h * (1.0 - double(cal.dig_H1) * h / 524288.0);
-            RH_pct = max(0, min(100, h));
-        end
-    end
 
     %% ==================== HELPER FUNCTIONS ====================
 
@@ -4473,8 +4380,8 @@ function psychrometric_interactive()
         T = linspace(TRange(1), TRange(2), 200);
         W_sat = zeros(size(T));
         for i = 1:length(T)
-            Pws = saturationPressure(T(i), unitSystem);
-            W_sat(i) = humidityRatio(Pws, P, unitSystem);
+            Pws = psychro.saturationPressure(T(i), unitSystem);
+            W_sat(i) = psychro.humidityRatio(Pws, P, unitSystem);
         end
         hSat = plot(handles.ax, T, W_sat, 'b-', 'LineWidth', 2.5, 'Tag', 'chartLine');
 
@@ -4485,9 +4392,9 @@ function psychrometric_interactive()
         for RH = RH_values
             W = zeros(size(T));
             for i = 1:length(T)
-                Pws = saturationPressure(T(i), unitSystem);
+                Pws = psychro.saturationPressure(T(i), unitSystem);
                 Pw = RH * Pws;
-                W(i) = humidityRatio(Pw, P, unitSystem);
+                W(i) = psychro.humidityRatio(Pw, P, unitSystem);
             end
             hLine = plot(handles.ax, T, W, '-', 'Color', [0.65 0.65 0.65], 'LineWidth', 0.5, 'Tag', 'chartLine');
             if isempty(hRH), hRH = hLine; end
@@ -4513,7 +4420,7 @@ function psychrometric_interactive()
             T = linspace(Twb, TRange(2), 100);
             W = zeros(size(T));
             for i = 1:length(T)
-                W(i) = humidityRatioFromWetBulb(T(i), Twb, P, unitSystem);
+                W(i) = psychro.humidityRatioFromWetBulb(T(i), Twb, P, unitSystem);
             end
             valid = W > 0 & W < 0.03;
             if sum(valid) > 2
@@ -4548,7 +4455,7 @@ function psychrometric_interactive()
             T = linspace(TRange(1), TRange(2), 100);
             W = zeros(size(T));
             for i = 1:length(T)
-                W(i) = humidityRatioFromEnthalpy(h, T(i), unitSystem);
+                W(i) = psychro.humidityRatioFromEnthalpy(h, T(i), unitSystem);
             end
             valid = W > 0 & W < 0.03 & ~isnan(W);
             if sum(valid) > 2
@@ -4583,7 +4490,7 @@ function psychrometric_interactive()
             T = linspace(TRange(1), TRange(2), 100);
             W = zeros(size(T));
             for i = 1:length(T)
-                W(i) = humidityRatioFromVolume(v, T(i), P, unitSystem);
+                W(i) = psychro.humidityRatioFromVolume(v, T(i), P, unitSystem);
             end
             valid = W > 0 & W < 0.03 & ~isnan(W);
             if sum(valid) > 2
@@ -4684,352 +4591,6 @@ function psychrometric_interactive()
         set(ch, 'HitTest', 'off');
     end
 
-    function props = calculateProperties(T, W, P, unitSystem)
-        props = struct();
-        props.T = T;
-        props.W = W;
-
-        Pws = saturationPressure(T, unitSystem);
-        props.Pws = Pws;
-
-        props.Pv = W * P / (0.62198 + W);
-
-        props.RH = props.Pv / Pws;
-        if props.RH > 1
-            props.RH = 1;
-        end
-
-        props.Tdp = calculateDewPoint(props.Pv, unitSystem);
-        props.Twb = calculateWetBulb(T, W, P, unitSystem);
-
-        if unitSystem == 1
-            props.h = 0.24 * T + W * (1061 + 0.444 * T);
-        else
-            props.h = 1.006 * T + W * (2501 + 1.86 * T);
-        end
-
-        if unitSystem == 1
-            T_R = T + 459.67;
-            P_psf = P * 144;
-            Ra = 53.352;
-            props.v = Ra * T_R / P_psf * (1 + 1.6078 * W);
-        else
-            T_K = T + 273.15;
-            Ra = 287.055;
-            props.v = Ra * T_K / P * (1 + 1.6078 * W);
-        end
-    end
-
-    function Tdp = calculateDewPoint(Pv, unitSystem)
-        if unitSystem == 1
-            T_low = -40;  T_high = 200;  tol = 0.001;
-        else
-            T_low = -60;  T_high = 80;   tol = 1;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            Pws_mid = saturationPressure(T_mid, unitSystem);
-            err = Pv - Pws_mid;
-
-            if abs(err) < tol || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if err > 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        Tdp = T_mid;
-    end
-
-    function [T_adp, W_adp] = findADP(T_room, W_room, SHR, P, unitSys)
-        % Find Apparatus Dew Point: where the SHR line from room condition
-        % intersects the saturation curve.
-        %
-        % SHR line slope on psychrometric chart (T vs W):
-        %   dW/dT = (1 - SHR) * Cp / (SHR * hfg)
-        % For cooling, we walk T downward from T_room until W_line(T) >= W_sat(T)
-
-        if unitSys == 2  % SI
-            Cp = 1006;       % J/(kg·K)
-            hfg = 2501000;   % J/kg
-        else  % IP
-            Cp = 0.24;       % Btu/(lb·°F)
-            hfg = 1061;      % Btu/lb
-        end
-
-        if SHR >= 1.0 || SHR <= 0
-            % Pure sensible or invalid SHR — no ADP intersection
-            T_adp = NaN;
-            W_adp = NaN;
-            return;
-        end
-
-        slope = (1 - SHR) * Cp / (SHR * hfg);  % dW/dT (positive value)
-        % For cooling: T decreases, W decreases, so W_line = W_room + slope*(T - T_room)
-        % Since T < T_room, dT is negative, and slope > 0, so W_line < W_room ✓
-
-        % Bisection: find T where W_line(T) = W_sat(T)
-        % At T_room: W_line = W_room > W_sat(T_room) if RH < 100% (above sat? no, below sat)
-        % Actually W_room < W_sat(T_room) always (point is below saturation)
-        % As T decreases: W_line decreases linearly, W_sat decreases exponentially
-        % At some T_adp: W_line = W_sat → intersection
-
-        T_low = -10;  % lower bound
-        if unitSys == 1
-            T_low = 10;  % °F lower bound
-        end
-        T_high = T_room;
-
-        % Check: at T_room, f = W_line - W_sat should be negative (W_room < W_sat)
-        Pws_room = saturationPressure(T_room, unitSys);
-        W_sat_room = humidityRatio(Pws_room, P, unitSys);
-        f_high = W_room - W_sat_room;  % should be negative (below saturation)
-
-        % At T_low, check if line is above saturation
-        W_line_low = W_room + slope * (T_low - T_room);
-        Pws_low = saturationPressure(T_low, unitSys);
-        W_sat_low = humidityRatio(Pws_low, P, unitSys);
-        f_low = W_line_low - W_sat_low;
-
-        if f_low < 0
-            % SHR line never reaches saturation curve in valid range
-            T_adp = NaN;
-            W_adp = NaN;
-            return;
-        end
-
-        % Bisect to find crossing
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            W_line_mid = W_room + slope * (T_mid - T_room);
-            Pws_mid = saturationPressure(T_mid, unitSys);
-            W_sat_mid = humidityRatio(Pws_mid, P, unitSys);
-            f_mid = W_line_mid - W_sat_mid;
-
-            if abs(f_mid) < 1e-7 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if f_mid > 0
-                T_low = T_mid;  % line still above sat, move right
-            else
-                T_high = T_mid;  % line below sat, move left
-            end
-        end
-
-        T_adp = T_mid;
-        Pws_adp = saturationPressure(T_adp, unitSys);
-        W_adp = humidityRatio(Pws_adp, P, unitSys);  % ADP is ON saturation curve
-    end
-
-    function Twb = calculateWetBulb(Tdb, W, P, unitSystem)
-        if unitSystem == 1
-            Twb_low = -20;
-        else
-            Twb_low = -10;
-        end
-        Twb_high = Tdb;
-
-        for iter = 1:100
-            Twb_mid = (Twb_low + Twb_high) / 2;
-            W_calc = humidityRatioFromWetBulb(Tdb, Twb_mid, P, unitSystem);
-            error = W - W_calc;
-
-            if abs(error) < 0.000001 || (Twb_high - Twb_low) < 0.01
-                break;
-            end
-
-            if error > 0
-                Twb_low = Twb_mid;
-            else
-                Twb_high = Twb_mid;
-            end
-        end
-        Twb = Twb_mid;
-    end
-
-    function T = temperatureFromSatPressure(Pws, unitSystem)
-        if unitSystem == 1
-            T_low = -40; T_high = 200;
-        else
-            T_low = -40; T_high = 100;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            Pws_calc = saturationPressure(T_mid, unitSystem);
-            error = Pws - Pws_calc;
-
-            if abs(error) < 0.1 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if error > 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        T = T_mid;
-    end
-
-    function [T, W] = solveFromWetBulbAndRH(Twb, RH, P, unitSystem)
-        if unitSystem == 1
-            T_low = Twb; T_high = Twb + 100;
-        else
-            T_low = Twb; T_high = Twb + 50;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            W_calc = humidityRatioFromWetBulb(T_mid, Twb, P, unitSystem);
-            Pws = saturationPressure(T_mid, unitSystem);
-            Pv = W_calc * P / (0.62198 + W_calc);
-            RH_calc = Pv / Pws;
-
-            error = RH - RH_calc;
-
-            if abs(error) < 0.001 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if error < 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        T = T_mid;
-        W = W_calc;
-    end
-
-    function [T, W] = solveFromWetBulbAndDewPoint(Twb, Tdp, P, unitSystem)
-        Pv = saturationPressure(Tdp, unitSystem);
-        W = humidityRatio(Pv, P, unitSystem);
-
-        if unitSystem == 1
-            T_low = Twb; T_high = Twb + 100;
-        else
-            T_low = Twb; T_high = Twb + 50;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            W_calc = humidityRatioFromWetBulb(T_mid, Twb, P, unitSystem);
-
-            error = W - W_calc;
-
-            if abs(error) < 0.000001 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if error < 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        T = T_mid;
-    end
-
-    function [T, W] = solveFromEnthalpyAndRH(h, RH, P, unitSystem)
-        if unitSystem == 1
-            T_low = 0; T_high = 150;
-        else
-            T_low = -10; T_high = 60;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            Pws = saturationPressure(T_mid, unitSystem);
-            Pv = RH * Pws;
-            W_calc = humidityRatio(Pv, P, unitSystem);
-
-            if unitSystem == 1
-                h_calc = 0.24 * T_mid + W_calc * (1061 + 0.444 * T_mid);
-            else
-                h_calc = 1.006 * T_mid + W_calc * (2501 + 1.86 * T_mid);
-            end
-
-            error = h - h_calc;
-
-            if abs(error) < 0.1 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if error > 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        T = T_mid;
-        W = W_calc;
-    end
-
-    function [T, W] = solveFromWetBulbAndW(Twb, W, P, unitSystem)
-        if unitSystem == 1
-            T_low = Twb; T_high = Twb + 100;
-        else
-            T_low = Twb; T_high = Twb + 50;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            W_calc = humidityRatioFromWetBulb(T_mid, Twb, P, unitSystem);
-
-            error = W - W_calc;
-
-            if abs(error) < 0.000001 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if error < 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        T = T_mid;
-    end
-
-    function [T, W] = solveFromWetBulbAndEnthalpy(Twb, h, P, unitSystem)
-        if unitSystem == 1
-            T_low = Twb; T_high = Twb + 100;
-        else
-            T_low = Twb; T_high = Twb + 50;
-        end
-
-        for iter = 1:100
-            T_mid = (T_low + T_high) / 2;
-            W_calc = humidityRatioFromWetBulb(T_mid, Twb, P, unitSystem);
-
-            if unitSystem == 1
-                h_calc = 0.24 * T_mid + W_calc * (1061 + 0.444 * T_mid);
-            else
-                h_calc = 1.006 * T_mid + W_calc * (2501 + 1.86 * T_mid);
-            end
-
-            error = h - h_calc;
-
-            if abs(error) < 0.1 || (T_high - T_low) < 0.01
-                break;
-            end
-
-            if error > 0
-                T_low = T_mid;
-            else
-                T_high = T_mid;
-            end
-        end
-        T = T_mid;
-        W = W_calc;
-    end
-
     function displayProperties(props, unitSystem)
         handles = guidata(fig);
 
@@ -5109,72 +4670,6 @@ function psychrometric_interactive()
 
     %% ==================== PSYCHROMETRIC EQUATIONS ====================
 
-    function Pws = saturationPressure(T, unitSystem)
-        if unitSystem == 1  % IP (T in F)
-            Tc = (T - 32) * 5/9;
-            if Tc >= 0
-                Pws_Pa = 611.21 * exp((18.678 - Tc/234.5) * Tc / (257.14 + Tc));
-            else
-                Pws_Pa = 611.2 * exp(21.875 * Tc / (Tc + 265.5));
-            end
-            Pws = Pws_Pa * 0.0001450377;
-        else  % SI (T in C)
-            if T >= 0
-                Pws = 611.21 * exp((18.678 - T/234.5) * T / (257.14 + T));
-            else
-                Pws = 611.2 * exp(21.875 * T / (T + 265.5));
-            end
-        end
-    end
-
-    function W = humidityRatio(Pw, P, ~)
-        W = 0.62198 * Pw / (P - Pw);
-        W = max(0, W);
-    end
-
-    function W = humidityRatioFromWetBulb(Tdb, Twb, P, unitSystem)
-        if Twb > Tdb
-            W = 0;
-            return;
-        end
-
-        Pws_wb = saturationPressure(Twb, unitSystem);
-        Ws_wb = humidityRatio(Pws_wb, P, unitSystem);
-
-        if unitSystem == 1
-            W = ((1061 + 0.444 * Twb) * Ws_wb - 0.24 * (Tdb - Twb)) / (1061 + 0.444 * Tdb);
-        else
-            W = ((2501 + 1.86 * Twb) * Ws_wb - 1.006 * (Tdb - Twb)) / (2501 + 1.86 * Tdb);
-        end
-        W = max(0, min(W, 0.03));
-    end
-
-    function W = humidityRatioFromEnthalpy(h, T, unitSystem)
-        if unitSystem == 1
-            Cp = 0.24; hfg = 1061; Cpv = 0.444;
-        else
-            Cp = 1.006; hfg = 2501; Cpv = 1.86;
-        end
-        W = (h - Cp * T) / (hfg + Cpv * T);
-        W = max(0, min(W, 0.03));
-    end
-
-    function W = humidityRatioFromVolume(v, T, P, unitSystem)
-        % Calculate humidity ratio from specific volume and temperature
-        % v = (Ra * T_abs / P) * (1 + 1.6078 * W)
-        if unitSystem == 1  % IP units
-            T_R = T + 459.67;       % Rankine
-            P_psf = P * 144;        % psf
-            Ra = 53.352;            % ft*lbf/(lb*R)
-            W = (v * P_psf / (Ra * T_R) - 1) / 1.6078;
-        else  % SI units
-            T_K = T + 273.15;       % Kelvin
-            Ra = 287.055;           % J/(kg*K)
-            W = (v * P / (Ra * T_K) - 1) / 1.6078;
-        end
-        W = max(0, min(W, 0.03));
-    end
-
     function hPatch = plotComfortZone(ax, P, unitSystem, cloVal, metVal, airVel)
         % Plot ASHRAE Standard 55 thermal comfort zone
         % Zone boundaries shift based on clothing (clo), metabolic rate (met),
@@ -5192,7 +4687,7 @@ function psychrometric_interactive()
         %   Air velocity: each +0.3 m/s above 0.1 shifts zone ~1.0 C warmer
 
         % Get temperature range for current parameters
-        [T_lo, T_hi] = getComfortTempRange(cloVal, metVal, airVel, unitSystem);
+        [T_lo, T_hi] = psychro.getComfortTempRange(cloVal, metVal, airVel, unitSystem);
 
         % RH bounds for the comfort zone
         RH_lo = 0.30;
@@ -5206,15 +4701,15 @@ function psychrometric_interactive()
         T_bot = linspace(T_lo, T_hi, nPts);
         W_bot = zeros(size(T_bot));
         for i = 1:nPts
-            Pws = saturationPressure(T_bot(i), unitSystem);
-            W_bot(i) = humidityRatio(RH_lo * Pws, P, unitSystem);
+            Pws = psychro.saturationPressure(T_bot(i), unitSystem);
+            W_bot(i) = psychro.humidityRatio(RH_lo * Pws, P, unitSystem);
         end
 
         T_top = linspace(T_hi, T_lo, nPts);
         W_top = zeros(size(T_top));
         for i = 1:nPts
-            Pws = saturationPressure(T_top(i), unitSystem);
-            W_top(i) = min(humidityRatio(RH_hi * Pws, P, unitSystem), W_upper_limit);
+            Pws = psychro.saturationPressure(T_top(i), unitSystem);
+            W_top(i) = min(psychro.humidityRatio(RH_hi * Pws, P, unitSystem), W_upper_limit);
         end
 
         T_poly = [T_bot T_top];
@@ -5237,8 +4732,8 @@ function psychrometric_interactive()
         % Label at the bottom edge of the zone
         midT = (T_lo + T_hi) / 2;
         % Place labels near the bottom of the zone
-        Pws_lo = saturationPressure(T_lo, unitSystem);
-        W_bottom = humidityRatio(RH_lo * Pws_lo, P, unitSystem);
+        Pws_lo = psychro.saturationPressure(T_lo, unitSystem);
+        W_bottom = psychro.humidityRatio(RH_lo * Pws_lo, P, unitSystem);
 
         text(ax, midT, W_bottom + 0.0005, ...
              sprintf('Comfort Zone  %.1f clo, %.1f met', cloVal, metVal), ...
@@ -5256,111 +4751,6 @@ function psychrometric_interactive()
              'FontSize', 6, 'Color', labelColour, ...
              'HorizontalAlignment', 'center', ...
              'HitTest', 'off', 'PickableParts', 'none', 'Tag', 'comfortZone');
-    end
-
-    function [T_lo, T_hi] = getComfortTempRange(cloVal, metVal, airVel, unitSystem)
-        % Calculate comfort zone operative temperature range
-        % based on clothing, metabolic rate, and air velocity.
-        %
-        % Reference points (ASHRAE 55, SI):
-        %   0.5 clo: 23.0 - 26.5 C
-        %   1.0 clo: 20.0 - 24.0 C
-        % Linear interpolation/extrapolation for other clo values.
-        % Met adjustment: -0.8 C per +0.1 met above 1.1
-        % Air velocity adjustment: +1.0 C per +0.3 m/s above 0.1
-
-        % Base ranges at reference clo values (in Celsius)
-        T_lo_05 = 23.0;  T_hi_05 = 26.5;   % 0.5 clo
-        T_lo_10 = 20.0;  T_hi_10 = 24.0;   % 1.0 clo
-
-        % Interpolate/extrapolate for clo
-        % Slope: per 0.5 clo increase, temps drop by ~3 C
-        slope_lo = (T_lo_10 - T_lo_05) / (1.0 - 0.5);  % -6 C/clo
-        slope_hi = (T_hi_10 - T_hi_05) / (1.0 - 0.5);  % -5 C/clo
-
-        T_lo = T_lo_05 + slope_lo * (cloVal - 0.5);
-        T_hi = T_hi_05 + slope_hi * (cloVal - 0.5);
-
-        % Metabolic rate adjustment (reference = 1.1 met)
-        met_shift = -0.8 * (metVal - 1.1) / 0.1;  % C per 0.1 met
-        T_lo = T_lo + met_shift;
-        T_hi = T_hi + met_shift;
-
-        % Air velocity adjustment (reference = 0.1 m/s)
-        vel_shift = 1.0 * (airVel - 0.1) / 0.3;   % C per 0.3 m/s
-        T_lo = T_lo + vel_shift;
-        T_hi = T_hi + vel_shift;
-
-        % Convert to IP if needed
-        if unitSystem == 1
-            T_lo = T_lo * 9/5 + 32;
-            T_hi = T_hi * 9/5 + 32;
-        end
-    end
-
-    function desc = getClothingDescription(cloVal)
-        % Return a description of typical clothing for a given clo value
-        if cloVal <= 0.35
-            desc = 'Shorts + T-shirt';
-        elseif cloVal <= 0.45
-            desc = 'Light trousers + T-shirt';
-        elseif cloVal <= 0.55
-            desc = 'Light trousers + short-sleeve shirt';
-        elseif cloVal <= 0.65
-            desc = 'Trousers + short-sleeve shirt + socks';
-        elseif cloVal <= 0.75
-            desc = 'Trousers + long-sleeve shirt';
-        elseif cloVal <= 0.85
-            desc = 'Trousers + long-sleeve shirt + jumper';
-        elseif cloVal <= 0.95
-            desc = 'Trousers + long-sleeve shirt + jacket';
-        elseif cloVal <= 1.05
-            desc = 'Trousers + shirt + jacket + tie';
-        elseif cloVal <= 1.15
-            desc = 'Trousers + shirt + jacket + waistcoat';
-        elseif cloVal <= 1.25
-            desc = 'Suit + waistcoat + overcoat (light)';
-        elseif cloVal <= 1.35
-            desc = 'Heavy suit + overcoat';
-        else
-            desc = 'Heavy winter clothing + overcoat';
-        end
-    end
-
-    function pmv = estimatePMV(To, RH, cloVal, metVal, airVel, unitSystem)
-        % Simplified PMV estimate based on Fanger''s model
-        % To = operative temperature, RH = relative humidity (0-1)
-        %
-        % This is a linearised approximation suitable for the
-        % typical HVAC range. For rigorous PMV, the full iterative
-        % Fanger model would be needed.
-
-        % Convert to Celsius if IP
-        if unitSystem == 1
-            To_C = (To - 32) * 5/9;
-        else
-            To_C = To;
-        end
-
-        % Neutral (comfort) temperature for given clo/met/airVel
-        [T_lo, T_hi] = getComfortTempRange(cloVal, metVal, airVel, 2);  % always in C
-        T_neutral = (T_lo + T_hi) / 2;
-
-        % PMV sensitivity: approximately 0.33 PMV per degree C deviation
-        % from neutral for typical indoor conditions
-        % (derived from Fanger model linearisation at typical conditions)
-        pmv_per_degC = 0.33;
-
-        % Humidity correction: higher humidity makes warm side feel warmer
-        % At 50% RH: no correction. Each 10% above/below shifts ~0.05 PMV
-        RH_pct = RH * 100;
-        humidity_correction = (RH_pct - 50) * 0.005;
-
-        % Base PMV from temperature deviation
-        pmv = pmv_per_degC * (To_C - T_neutral) + humidity_correction;
-
-        % Clamp to reasonable range
-        pmv = max(-3, min(3, pmv));
     end
 
 end
