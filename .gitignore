@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+python/data/
+python/results/*.joblib
+
+# MATLAB
+*.asv
+*.mex*
+slprj/
+
+# OS
+.DS_Store
+Thumbs.db
